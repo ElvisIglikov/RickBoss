@@ -1,0 +1,50 @@
+# Ключи и вход — никогда в git
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+telethon_kit/team_config.json
+telethon_kit/.telegram_safety/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Твои настройки
+config.json
+voice/config.json
+.claude/settings.local.json
+
+# Твоя память — в git только шаблоны (*.example.md)
+memory/*.md
+!memory/*.example.md
+memory/keywords.json
+memory/tasks.jsonl
+journal/*.md
+memory/projects/*.md
+archive/*
+!archive/.gitkeep
+
+# Живое состояние Рика
+state/
+inbox/
+live/log/
+voice/cache/
+
+# Окружение и кеши
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Крупные бинарники
+*.zip
+*.mp4
+*.mov
+*.wav
+*.m4a
+
+# Озвучки и список ответов голоса
+voice/otvety/

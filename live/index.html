@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Рик вслух</title>
+<style>
+  :root { --bg:#111418; --panel:#1a1f26; --text:#e8ecf1; --dim:#8b95a3; --user:#7cc4ff; --voice:#b8e986; --rick:#ffb86b; --bad:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:17px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+         display:flex; flex-direction:column; align-items:center; min-height:100vh; padding:24px 16px; }
+  #orb { width:140px; height:140px; border-radius:50%; margin:12px 0 18px; background:#2a313b; transition:background .3s, box-shadow .3s; }
+  body[data-state=listen] #orb { background:#244a36; box-shadow:0 0 40px #2f7a50; }
+  body[data-state=speak] #orb { background:#3d6b1f; box-shadow:0 0 60px #7bc043; animation:pulse 1.2s infinite; }
+  body[data-state=rick] #orb, body[data-state=wait] #orb { background:#6b4a1f; box-shadow:0 0 50px #c9852f; }
+  body[data-state=connecting] #orb { background:#2a3f5c; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { transform:scale(1.06); } }
+  #status { font-size:28px; font-weight:600; min-height:1.4em; text-align:center; }
+  #meta { color:var(--dim); font-size:14px; margin:4px 0 16px; text-align:center; }
+  .buttons { display:flex; gap:12px; margin-bottom:18px; }
+  button { font:inherit; font-size:19px; padding:12px 28px; border:0; border-radius:12px; cursor:pointer; background:#2f7a50; color:#fff; }
+  button#stop { background:#5a2a2a; }
+  button#unmute { background:#c9852f; }
+  #log { width:100%; max-width:760px; background:var(--panel); border-radius:14px; padding:12px 16px; flex:1; overflow-y:auto; max-height:55vh; }
+  .line { margin:6px 0; display:flex; gap:10px; }
+  .who { flex:0 0 56px; color:var(--dim); font-size:13px; padding-top:3px; }
+  .user .txt { color:var(--user); } .voice .txt { color:var(--voice); } .rick .txt { color:var(--rick); } .sys .txt { color:var(--dim); font-size:14px; }
+  a { color:var(--dim); }
+</style>
+</head>
+<body data-state="off">
+<div id="orb"></div>
+<div id="status">Не подключён</div>
+<div id="meta"></div>
+<div class="buttons">
+  <button id="start">Начать разговор</button>
+  <button id="stop" hidden>Стоп</button>
+  <button id="unmute" hidden>Включить звук</button>
+</div>
+<div id="log"></div>
+<audio id="voice" autoplay></audio>
+
+<script>
+// Живой голос Рика. Ключ OpenAI сюда не приходит: GPT-Live-1 подключает сервер (мы шлём ему SDP),
+// для gpt-realtime-2.1 сервер выдаёт временный ключ сессии.
+const qs = new URLSearchParams(location.search);
+const ENGINE = qs.get("engine") === "realtime" ? "realtime" : "live";
+const IDLE_MS = 10 * 60 * 1000;      // 10 минут тишины — закрываем сессию, минуты платные
+const LIVE_PRICE = 0.05;             // $ в минуту у GPT-Live-1
+const DEBUG = qs.get("debug") === "1";   // ?debug=1 — все события сессии и счётчик звука в журнал
+const $ = (id) => document.getElementById(id);
+
+let pc = null, dc = null, mic = null, open = false, stopping = false, restarts = 0;
+let lastActivity = Date.now(), evn = 0, t0 = 0;
+let userFrags = [], lastCut = -1, lastDelegation = null;    // GPT-Live: просьба — из расшифровки
+const pendingCommentary = new Map();
+let responseActive = false, wantResponse = false;           // gpt-realtime: по очереди
+let nowSeen = null, nowPushedAt = 0;   // сводка «что сейчас», которую сессия уже знает: {v, text}, и когда дослана
+const NOW_EVERY_MS = 60 * 1000;           // спрашиваем сервер раз в минуту
+const NOW_MIN_GAP_MS = 3 * 60 * 1000;     // досылаем в сессию не чаще раза в 3 минуты
+const BUSY_TEXT = "Рик занят — фраза у него в почте, ответит после текущего дела";
+
+$("meta").textContent = ENGINE === "live" ? "GPT-Live-1" : "gpt-realtime-2.1 (запасной)";
+
+// ---- экран и журнал ----
+let speakTimer = null;
+function setState(state, text) { document.body.dataset.state = state; $("status").textContent = text; }
+function logEv(kind, data = {}) {
+  fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ events: [{ kind, engine: ENGINE, ...data }] }) }).catch(() => {});
+}
+function addLine(who, text) {
+  const row = document.createElement("div");
+  row.className = "line " + who;
+  row.innerHTML = '<span class="who"></span><span class="txt"></span>';
+  row.querySelector(".who").textContent = { user: "Ты", voice: "Голос", rick: "Рик", sys: "·" }[who];
+  row.querySelector(".txt").textContent = text;
+  $("log").appendChild(row);
+  row.scrollIntoView({ block: "end" });
+  return row;
+}
+let cur = null;   // текущая реплика: дельты расшифровки копим, в журнал — целиком
+function speak(who, delta) {
+  if (!delta) return;
+  if (!cur || cur.who !== who) { flush(); cur = { who, text: "", el: addLine(who, "") }; }
+  cur.text += delta;
+  cur.el.querySelector(".txt").textContent = cur.text;
+  clearTimeout(cur.timer);
+  cur.timer = setTimeout(flush, 2500);
+  if (who === "voice") {
+    setState("speak", "Говорит");
+    clearTimeout(speakTimer);
+    speakTimer = setTimeout(() => { if (open && document.body.dataset.state === "speak") setState("listen", "Слушаю"); }, 1500);
+  }
+}
+function flush() {
+  if (cur) { clearTimeout(cur.timer); if (cur.text.trim()) logEv("said", { who: cur.who, text: cur.text.trim() }); }
+  cur = null;
+}
+function showUsage(sec) {
+  if (sec == null) return;
+  $("meta").textContent = `GPT-Live-1 · ${(sec / 60).toFixed(1)} мин · $${(sec / 60 * LIVE_PRICE).toFixed(2)}`;
+}
+const LIVE_TOKEN = "__LIVE_TOKEN__";  // подставляет server.py при отдаче страницы
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Live-Token": LIVE_TOKEN }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+  return j;
+}
+function send(ev) { if (dc && dc.readyState === "open") dc.send(JSON.stringify(ev)); }
+
+// ---- подключение ----
+async function start() {
+  if (pc) return;
+  stopping = false;
+  setState("connecting", "Подключаюсь…");
+  $("start").hidden = true; $("stop").hidden = false;
+  try {
+    // Микрофон Мака, а не iPhone по Continuity: Chrome иногда берёт телефон
+    let pick = {};
+    try {
+      const ins = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+      const mac = ins.find((d) => /MacBook|Встро|Built-in/i.test(d.label));
+      if (mac) pick = { deviceId: { exact: mac.deviceId } };
+    } catch (e) {}
+    mic = await navigator.mediaDevices.getUserMedia({ audio: { ...pick, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    pc = new RTCPeerConnection();
+    pc.ontrack = (e) => {
+      const a = $("voice");
+      a.srcObject = e.streams[0] || new MediaStream([e.track]);
+      a.play().catch(() => { $("unmute").hidden = false; });
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc && pc.connectionState === "failed" && !stopping) finish("Связь оборвалась");
+    };
+    mic.getAudioTracks().forEach((t) => pc.addTrack(t, mic));
+    dc = pc.createDataChannel("oai-events");
+    dc.onmessage = (e) => {
+      let ev; try { ev = JSON.parse(e.data); } catch { return; }
+      if (DEBUG && !/delta$/.test(ev.type)) logEv("ev", { type: ev.type, body: JSON.stringify(ev).slice(0, 400) });
+      ENGINE === "live" ? onLive(ev) : onRealtime(ev);
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    t0 = performance.now();
+    let answer;
+    if (ENGINE === "live") {
+      const r = await api("/api/session", { sdp: offer.sdp });
+      answer = r.sdp;
+      nowSeen = r.now || null; nowPushedAt = Date.now();
+      logEv("connect", { session: r.id, model: r.model, ms: Math.round(performance.now() - t0) });
+    } else {
+      const t = await api("/api/token", {});
+      nowSeen = t.now || null; nowPushedAt = Date.now();
+      const r = await fetch("https://api.openai.com/v1/realtime/calls", { method: "POST", body: offer.sdp,
+        headers: { Authorization: "Bearer " + t.value, "Content-Type": "application/sdp" } });
+      if (!r.ok) throw new Error("OpenAI " + r.status + ": " + (await r.text()).slice(0, 300));
+      answer = await r.text();
+      logEv("connect", { model: t.model, ms: Math.round(performance.now() - t0) });
+    }
+    await pc.setRemoteDescription({ type: "answer", sdp: answer });
+    lastActivity = Date.now();
+  } catch (err) {
+    addLine("sys", "Не подключился: " + err.message);
+    logEv("error", { where: "start", message: err.message });
+    finish("Не подключился");
+  }
+}
+function stop(reason = "Остановлен") {
+  if (!pc) return;
+  stopping = true;
+  if (ENGINE === "live") send({ type: "session.close", event_id: "close" });
+  setTimeout(() => finish(reason), ENGINE === "live" ? 1500 : 0);
+}
+function finish(reason) {
+  if (!pc && !mic) return;
+  flush();
+  try { pc && pc.close(); } catch {}
+  mic && mic.getTracks().forEach((t) => t.stop());
+  pc = dc = mic = null; open = false;
+  setState("off", reason);
+  $("start").hidden = false; $("stop").hidden = true;
+  logEv("closed", { reason });
+}
+
+// ---- GPT-Live-1: слушает и говорит одновременно, работу отдаёт делегированием ----
+function onLive(ev) {
+  switch (ev.type) {
+    case "session.started":
+      open = true; restarts = 0;
+      setState("listen", "Слушаю");
+      logEv("started", { session: ev.session && ev.session.id, ms: Math.round(performance.now() - t0) });
+      break;
+    case "session.input_transcript.delta":
+      lastActivity = Date.now();
+      userFrags.push({ s: ev.start_ms, e: ev.end_ms, d: ev.delta });
+      if (userFrags.length > 600) userFrags.splice(0, 300);
+      speak("user", ev.delta);
+      break;
+    case "session.output_transcript.delta":
+      speak("voice", ev.delta);
+      break;
+    case "session.delegation.created":
+      if (ev.delegation && ev.delegation.target === "client") delegate(ev);
+      break;
+    case "session.commentary.appended":
+      pendingCommentary.delete(ev.client_event_id);
+      break;
+    case "session.usage.updated":
+      showUsage(ev.usage && ev.usage.seconds);
+      break;
+    case "session.closed": {
+      showUsage(ev.usage && ev.usage.seconds);
+      logEv("session.closed", { reason: ev.reason, seconds: ev.usage && ev.usage.seconds });
+      const again = ev.reason === "expired" && !stopping && Date.now() - lastActivity < IDLE_MS && restarts < 3;
+      finish("Сессия закрыта: " + ev.reason);
+      if (again) { restarts++; addLine("sys", "Сессия истекла — подключаюсь заново"); setTimeout(start, 1000); }
+      break;
+    }
+    case "error": {
+      const err = ev.error || {};
+      const id = err.client_event_id || ev.client_event_id;
+      addLine("sys", "Ошибка: " + (err.message || err.code || "?"));
+      logEv("error", { code: err.code, message: err.message, client_event_id: id });
+      if (id && pendingCommentary.has(id) && !id.endsWith("n")) {   // старая делегация не принята — шлём общим контекстом
+        const content = pendingCommentary.get(id);
+        pendingCommentary.delete(id);
+        commentary(content, null, id + "n");
+      }
+      break;
+    }
+  }
+}
+
+// Текста просьбы в сигнале делегирования нет: берём из расшифровки последнюю сплошную реплику хозяина.
+function requestText(offset) {
+  const to = offset + 2000, frags = userFrags.filter((f) => f.s > lastCut && f.s < to && f.s > offset - 45000);
+  let i = frags.length - 1;
+  while (i > 0 && frags[i].s - frags[i - 1].e < 3000) i--;
+  lastCut = Math.max(lastCut, to);
+  return frags.slice(Math.max(i, 0)).map((f) => f.d).join("").replace(/\s+/g, " ").trim();
+}
+function delegate(ev) {
+  const id = ev.delegation.id, offset = ev.offset_ms || 0;
+  lastDelegation = { id, at: Date.now() };
+  setState("rick", "Передаю Рику…");
+  logEv("delegation", { id, offset_ms: offset });
+  setTimeout(async () => {   // последние слова расшифровка присылает чуть позже сигнала
+    const text = requestText(offset);
+    if (!text) {
+      send({ type: "session.thinking.append", delegation_id: id,
+        content: "Слов хозяина не расслышал, Рику ничего не передано. Переспроси, что передать." });
+      setState("listen", "Слушаю");
+      return;
+    }
+    addLine("sys", "→ Рику: " + text);
+    let r;
+    try { r = await api("/api/ask", { text, engine: ENGINE, delegation_id: id }); } catch (e) { r = { ok: false, error: e.message }; }
+    if (!r.ok) addLine("sys", "Мост к Рику: " + r.error);
+    if (r.queued) {   // Рик занят ходом: фраза лежит в его почте и дойдёт — это не отказ
+      addLine("sys", BUSY_TEXT);
+      commentary(`${BUSY_TEXT}. Его ответ придёт позже сообщением «Рик ответил».`, id);
+    } else send({ type: "session.thinking.append", delegation_id: id, content: r.ok
+      ? `Просьба передана Рику: «${text.slice(0, 600)}». Его ответ придёт позже сообщением «Рик ответил». Сам ответ не придумывай.`
+      : `Передать Рику не вышло: ${r.error}. Скажи хозяину, что мост к Рику не сработал.` });
+    setState(r.ok ? "wait" : "listen", r.queued ? "Рик занят — в почте" : r.ok ? "Жду Рика" : "Мост не сработал");
+  }, 1500);
+}
+function commentary(content, delegationId, eventId) {
+  const id = eventId || "rick_" + (++evn);
+  pendingCommentary.set(id, content);
+  send({ type: "session.commentary.append", event_id: id, delegation_id: delegationId, content });
+}
+
+// ---- gpt-realtime-2.1: по очереди, работу отдаёт инструментом ask_rick ----
+function respond() { if (responseActive) wantResponse = true; else send({ type: "response.create" }); }
+function onRealtime(ev) {
+  switch (ev.type) {
+    case "session.created":
+      open = true;
+      setState("listen", "Слушаю");
+      logEv("started", { session: ev.session && ev.session.id, ms: Math.round(performance.now() - t0) });
+      break;
+    case "input_audio_buffer.speech_started":
+      lastActivity = Date.now();
+      break;
+    case "conversation.item.input_audio_transcription.completed":
+      flush(); addLine("user", ev.transcript || ""); logEv("said", { who: "user", text: ev.transcript });
+      break;
+    case "response.output_audio_transcript.delta":
+    case "response.audio_transcript.delta":
+      speak("voice", ev.delta);
+      break;
+    case "response.created":
+      responseActive = true;
+      break;
+    case "response.done":
+      responseActive = false;
+      if (wantResponse) { wantResponse = false; send({ type: "response.create" }); }
+      break;
+    case "response.function_call_arguments.done":
+      if (ev.name === "ask_rick") askTool(ev);
+      break;
+    case "error":
+      addLine("sys", "Ошибка: " + (ev.error && ev.error.message));
+      logEv("error", { code: ev.error && ev.error.code, message: ev.error && ev.error.message });
+      break;
+  }
+}
+async function askTool(ev) {
+  let text = "";
+  try { text = JSON.parse(ev.arguments || "{}").request || ""; } catch {}
+  addLine("sys", "→ Рику: " + text);
+  setState("rick", "Передаю Рику…");
+  let r;
+  try { r = await api("/api/ask", { text, engine: ENGINE }); } catch (e) { r = { ok: false, error: e.message }; }
+  if (!r.ok) addLine("sys", "Мост к Рику: " + r.error);
+  send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: ev.call_id,
+    output: JSON.stringify(r.queued ? { status: BUSY_TEXT + " — так и скажи хозяину; ответ придёт позже сообщением «Рик ответил»" }
+                         : r.ok ? { status: "передано Рику, ответ придёт позже сообщением «Рик ответил»" }
+                                : { status: "не передано", error: r.error }) } });
+  respond();
+  setState(r.ok ? "wait" : "listen", r.queued ? "Рик занят — в почте" : r.ok ? "Жду Рика" : "Мост не сработал");
+}
+
+// ---- сводка «что сейчас»: раз в минуту спрашиваем сервер, смену досылаем не чаще раза в 3 минуты ----
+// У GPT-Live инструкции живой модели на ходу не меняются (session.update — только делегированию),
+// поэтому — молча, thinking.append на всю сессию (delegation_id: null), кусками до 500 токенов.
+async function refreshNow() {
+  if (!open || !nowSeen || Date.now() - nowPushedAt < NOW_MIN_GAP_MS) return;
+  let n; try { n = await (await fetch("/api/now")).json(); } catch { return; }
+  if (!n.v || n.v === nowSeen.v) return;
+  const whole = n.text.length <= 3000;   // короткая сводка — целиком взамен; длинная — только новые строки
+  const old = new Set(nowSeen.text.split("\n"));
+  const body = whole ? n.text : n.text.split("\n").filter((l) => l.trim() && !old.has(l)).join("\n").slice(-3000);
+  nowSeen = n; nowPushedAt = Date.now();
+  if (!body.trim()) return;
+  const parts = [];
+  for (let i = 0; i < body.length; i += 1000) parts.push(body.slice(i, i + 1000));
+  parts.forEach((p, i) => {
+    const content = `Сводка обновлена${whole ? ", заменяет прежнюю" : ", новые строки"} (${i + 1}/${parts.length}), вслух не зачитывай:\n` + p;
+    if (ENGINE === "live") send({ type: "session.thinking.append", event_id: "now_" + (++evn), delegation_id: null, content });
+    else send({ type: "conversation.item.create", item: { type: "message", role: "system",
+      content: [{ type: "input_text", text: content }] } });
+  });
+  logEv("now.pushed", { v: n.v, src: n.src, chars: body.length, whole });
+}
+setInterval(refreshNow, NOW_EVERY_MS);
+
+// ---- ответы Рика: сервер следит за voice/otvety/spisok.txt ----
+function onRickAnswer(text) {
+  flush();
+  addLine("rick", text);
+  lastActivity = Date.now();
+  if (!open) return;
+  const content = ("Рик ответил: " + text).slice(0, 1500);   // потолок одной вставки — 500 токенов
+  if (ENGINE === "live") {
+    const fresh = lastDelegation && Date.now() - lastDelegation.at < 15 * 60 * 1000;
+    commentary(content, fresh ? lastDelegation.id : null);
+  } else {
+    send({ type: "conversation.item.create", item: { type: "message", role: "system",
+      content: [{ type: "input_text", text: content + "\nПерескажи это хозяину почти дословно." }] } });
+    respond();
+  }
+  logEv("rick.forwarded", { chars: content.length });
+  if (document.body.dataset.state === "wait") setState("listen", "Слушаю");
+}
+const answers = new EventSource("/api/answers");
+answers.onmessage = (e) => { try { onRickAnswer(JSON.parse(e.data).text); } catch {} };
+
+// ---- кнопки, сторож тишины ----
+$("start").onclick = () => start();
+$("stop").onclick = () => stop();
+$("unmute").onclick = () => { $("voice").play().then(() => { $("unmute").hidden = true; }).catch(() => {}); };
+setInterval(async () => {
+  if (DEBUG && pc) {
+    const stats = await pc.getStats();
+    stats.forEach((s) => { if (["outbound-rtp", "inbound-rtp", "media-source"].includes(s.type))
+      logEv("rtp", { dir: s.type, bytes: s.bytesSent ?? s.bytesReceived, level: s.audioLevel, state: pc && pc.connectionState }); });
+  }
+  if (pc && open && Date.now() - lastActivity > IDLE_MS) {
+    addLine("sys", "10 минут тишины — закрыл сессию, чтобы не капали деньги.");
+    stop("Уснул: 10 минут тишины");
+  }
+}, DEBUG ? 8000 : 30000);
+window.addEventListener("beforeunload", () => { if (ENGINE === "live") send({ type: "session.close", event_id: "close" }); });
+if (qs.get("auto") === "1") start();
+</script>
+</body>
+</html>

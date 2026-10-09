@@ -1,0 +1,19 @@
+{
+  "owner": "босс",
+  "projects_root": "~/Projects",
+  "model": "",
+  "effort": "high",
+  "permission_mode": "default",
+  "term_confirm_dialogs": false,
+  "wake_on_mail": false,
+  "notify": {
+    "sound": true,
+    "banner": true,
+    "long_turn": true
+  },
+  "voice": {
+    "engine": "say",
+    "say_voice": "Milena",
+    "say_rate": "175"
+  }
+}

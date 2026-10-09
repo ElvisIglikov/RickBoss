@@ -1,0 +1,125 @@
+<!doctype html>
+<!--
+  Сводка «что у нас» (tools/digest.py --html). Код подставляет метки TITLE, HEADER и BODY (в двойных фигурных скобках, только в разметке ниже): разделы
+  «Реши» (вопросы с номерами), «Идёт», «Тихо», «Подвисшие вопросы». Пункт — section.pt: номер .no, откуда .kick,
+  суть .gist, рекомендация .rec, ответ — кружки «да / нет / позже» или своё слово. Без сети, тёмная и светлая тема
+  по системе, ширина телефона. Правишь вид — правь здесь, код трогать не нужно.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{TITLE}}</title>
+<style>
+  :root{color-scheme:light dark;--bg:#15171a;--card:#1e2126;--line:#30343b;--text:#e8e6e3;--muted:#a3a7ad;--accent:#8fb3d9;--ok:#8fe0a3;--shade:rgba(21,23,26,.94)}
+  @media (prefers-color-scheme:light){
+    :root{--bg:#f7f6f3;--card:#ffffff;--line:#dcdad5;--text:#1d1f22;--muted:#5f646b;--accent:#2f6aa8;--ok:#1d6b34;--shade:rgba(247,246,243,.95)}
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font:20px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:0 24px 5.5rem;overflow-x:hidden}
+  @media (max-width:560px){body{font-size:18px;padding:0 16px 5.5rem}}
+  header{padding:20px 0 1rem}
+  .plate{display:inline-block;border:1px solid var(--accent);color:var(--accent);border-radius:8px;padding:2px 10px;font-size:.8em;letter-spacing:.05em}
+  h1{font-size:2.2rem;line-height:1.15;margin:.4em 0 .15em}
+  .who{color:var(--muted);font-size:.85em;margin:0 0 .6em}
+  .hint{color:var(--muted);margin:0 0 .7em;max-width:62ch}
+  .tocg{margin:.5em 0 0}
+  .tocg .tl{display:block;color:var(--muted);font-size:.8em;margin:0 0 4px}
+  .toc{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}
+  .toc a{display:inline-block;min-width:2.3em;text-align:center;padding:3px 8px;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--c,var(--text));font-weight:700;font-size:1.1rem;background:var(--card)}
+
+  .grp{font-size:3rem;line-height:1.1;margin:1.2rem 0 0;padding:1.1rem 0 .2rem;border-top:2px solid var(--line)}
+  @media (max-width:560px){.grp{font-size:2.2rem}}
+  .grp small{display:block;font-size:.4em;font-weight:400;color:var(--muted);margin-top:.35em}
+
+  .pt{padding:1.2rem 0 1.3rem;border-top:1px solid var(--line);border-left:4px solid var(--c);padding-left:14px}
+  .grp+.pt{border-top:0;padding-top:.6rem}
+  .hd{display:flex;align-items:baseline;flex-wrap:wrap;column-gap:.7rem;margin:0 0 .25rem}
+  .no{font-size:3rem;line-height:1;font-weight:800;color:var(--c);letter-spacing:-.03em}
+  @media (max-width:560px){.no{font-size:2.6rem}}
+  .pname{font-size:1.4rem;font-weight:700}
+  .kick{color:var(--muted);font-size:.85em;letter-spacing:.02em;overflow-wrap:anywhere}
+  .gist{font-size:1.4rem;line-height:1.3;font-weight:650;margin:0 0 .45rem;max-width:48ch;overflow-wrap:anywhere}
+  .ans{margin:0 0 .5rem;line-height:1.6;max-width:62ch}
+  .ans .rec{background:color-mix(in srgb,var(--accent) 16%,transparent);border-radius:8px;padding:1px 6px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+  .ans .rec i{font-style:normal;color:var(--accent);font-weight:700}
+  .flow{margin:.2rem 0;max-width:62ch;overflow-wrap:anywhere}
+  .note,.quiet,.empty{color:var(--muted);margin:.5rem 0 0;max-width:62ch;overflow-wrap:anywhere}
+  .quiet{margin-top:1.2rem}
+  .quiet b{color:var(--text)}
+
+  /* Ответ: кружки — одно нажатие; повторное нажатие снимает выбор; своё слово — поле под ними */
+  .pick{display:flex;flex-wrap:wrap;gap:8px;margin:.3rem 0 .5rem}
+  .chip{position:relative}
+  .chip input{position:absolute;opacity:0;width:1px;height:1px}
+  .chip span{display:inline-block;min-width:4.2em;text-align:center;padding:6px 14px;border:2px solid var(--line);border-radius:999px;background:var(--card);cursor:pointer;user-select:none}
+  .chip input:checked+span{border-color:var(--c);background:color-mix(in srgb,var(--c) 22%,var(--card));font-weight:700}
+  .chip input:focus-visible+span{outline:3px solid var(--accent);outline-offset:2px}
+  .own{display:block;width:100%;max-width:40ch;font:inherit;font-size:.9em;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 10px;resize:vertical}
+  .own:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+
+  /* Нижняя полоса: «Скопировать ответы» — всегда под рукой */
+  .bar{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 24px;background:var(--shade);border-top:1px solid var(--line)}
+  @media (max-width:560px){.bar{padding:10px 16px}}
+  .bar button{font:inherit;font-weight:700;color:var(--bg);background:var(--accent);border:0;border-radius:12px;padding:8px 18px;cursor:pointer}
+  .bar button:focus-visible{outline:3px solid var(--text);outline-offset:2px}
+  .bar button:disabled{opacity:.5;cursor:default}
+  .bar .msg{color:var(--muted);font-size:.85em}
+  .bar .msg.ok{color:var(--ok)}
+  .bar textarea{flex-basis:100%;font:inherit;font-size:.85em;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 10px;min-height:4.5em}
+  .bar textarea[hidden]{display:none}
+  @media (prefers-color-scheme:light){.no,.toc a{color:color-mix(in srgb,var(--c) 60%,#000)}}
+</style>
+</head>
+<body>
+<header>
+{{HEADER}}
+</header>
+<main>
+{{BODY}}
+</main>
+<div class="bar" role="region" aria-label="Ответы">
+<button type="button" id="copy">Скопировать ответы</button><span class="msg" id="msg" aria-live="polite"></span>
+<textarea id="fallback" hidden readonly aria-label="Ответы — выдели и скопируй"></textarea>
+</div>
+<script>
+(function(){
+  var btn=document.getElementById('copy'), msg=document.getElementById('msg'), fb=document.getElementById('fallback');
+  var qs=document.querySelectorAll('section.pt[data-n]');
+  if(!qs.length){ btn.disabled=true; msg.textContent='Решать нечего'; return; }
+  // Повторный клик по выбранному кружку снимает выбор (у радио этого нет)
+  document.addEventListener('click', function(e){
+    var t=e.target; if(!t.matches || !t.matches('.chip input')) return;
+    if(t.dataset.was==='1'){ t.checked=false; t.dataset.was=''; }
+    else { document.querySelectorAll('input[name="'+t.name+'"]').forEach(function(x){ x.dataset.was=''; }); t.dataset.was='1'; }
+    say('', false);
+  });
+  function say(text, ok){ msg.textContent=text; msg.classList.toggle('ok', !!ok); }
+  function answers(){
+    var out=[];
+    qs.forEach(function(q){
+      var pick=q.querySelector('.chip input:checked'), own=q.querySelector('.own').value.trim();
+      var a=[pick?pick.value:'', own].filter(Boolean).join(' — ');
+      if(a) out.push(q.dataset.n+' ('+q.dataset.project+'): '+a);
+    });
+    return out.join('\n');
+  }
+  function manual(text){
+    fb.value=text; fb.hidden=false; fb.focus(); fb.select();
+    say('Не скопировалось само — выделено, нажми ⌘C', false);
+  }
+  btn.addEventListener('click', function(){
+    var text=answers(); fb.hidden=true;
+    if(!text){ say('Ни одного ответа: отметь кружок или впиши свой', false); return; }
+    if(navigator.clipboard && window.isSecureContext!==false){
+      navigator.clipboard.writeText(text).then(function(){ say('Скопировано: '+text.split('\n').length+' — вставь Рику', true); },
+                                              function(){ manual(text); });
+    } else { manual(text); }
+  });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && !fb.hidden){ fb.hidden=true; say('', false); btn.focus(); } });
+})();
+</script>
+</body>
+</html>

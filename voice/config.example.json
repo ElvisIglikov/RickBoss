@@ -1,0 +1,20 @@
+{
+  "voice_id": "",
+  "voice_name": "",
+  "model_id": "eleven_flash_v2_5",
+  "language_code": "ru",
+  "output_format": "mp3_44100_128",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.85,
+    "style": 0.1,
+    "use_speaker_boost": true,
+    "speed": 1.0
+  },
+  "voices": {},
+  "current": "rick",
+  "duck_to": 100,
+  "fade_steps": 8,
+  "gain": 1.0,
+  "paragraph_pause": 1.2
+}

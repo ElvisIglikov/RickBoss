@@ -1,0 +1,113 @@
+{
+  "outputStyle": "Рик",
+  "statusLine": {
+    "type": "command",
+    "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/statusline.py\"",
+    "padding": 0
+  },
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": [
+      "Огрызаюсь",
+      "Ворчу",
+      "Разгребаю",
+      "Пинаю чаты",
+      "Считаю идиотов",
+      "Делаю, раз уж надо"
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python3 tools/term.py:*)",
+      "Bash(python3 tools/rick_bus.py:*)",
+      "Bash(python3 voice/rick_voice.py:*)",
+      "Bash(python3 tools/rick_config.py status)",
+      "Bash(python3 tools/remind.py:*)",
+      "Bash(python3 tools/tasks.py:*)",
+      "Bash(python3 tools/notify.py:*)",
+      "Bash(python3 tools/digest.py:*)",
+      "Bash(mkdir -p:*)",
+      "Edit(state/**)",
+      "Write(state/**)",
+      "Edit(memory/**)",
+      "Write(memory/**)"
+    ],
+    "deny": [
+      "Read(//**/.env)",
+      "Read(//**/*.session)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.claude/.credentials.json)",
+      "Bash(cat *.env*)",
+      "Bash(cat *.session*)",
+      "Bash(head *.env*)",
+      "Bash(head *.session*)",
+      "Bash(tail *.env*)",
+      "Bash(tail *.session*)",
+      "Bash(less *.env*)",
+      "Bash(less *.session*)",
+      "Bash(more *.env*)",
+      "Bash(more *.session*)",
+      "Bash(grep *.env*)",
+      "Bash(grep *.session*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/mem_hook.py\" start",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/rick_bus.py\" wait",
+            "asyncRewake": true,
+            "timeout": 43200
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/mem_hook.py\" prompt",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/mem_hook.py\" batch",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/mem_hook.py\" stop",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/rick_bus.py\" wait",
+            "asyncRewake": true,
+            "timeout": 43200
+          }
+        ]
+      }
+    ]
+  }
+}

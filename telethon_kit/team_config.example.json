@@ -1,0 +1,15 @@
+{
+  "team": {
+    "primer": {
+      "full_name": "",
+      "telegram_id": 0,
+      "telegram_username": ""
+    }
+  },
+  "aliases": {
+    "primer": 0
+  },
+  "never_send": {
+    "0": "пример: рабочий аккаунт человека вместо личного"
+  }
+}
